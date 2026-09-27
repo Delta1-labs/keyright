@@ -1,0 +1,165 @@
+"""
+Keyright — Python SDK sample.
+
+Demonstrates the machine-licensing operations a software vendor needs:
+  A. Read the license state (perpetual / term / evaluation) and show an eval banner
+  1. Activate a machine (online)
+  2. Deactivate a machine (online)
+  3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
+  4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
+  5. Force-deactivate a machine (vendor side)
+
+Run:  pip install keyright>=1.1.4  &&  python samples.py
+
+Everything below the CONFIG block is generic SDK usage — copy it into your app.
+"""
+import os
+import urllib.request
+import urllib.error
+
+from keyright import KeyrightClient, KeyrightOptions, LicenseStatus, MachineFingerprint
+
+# --------------------------------------------------------------------------------------
+# CONFIG — point these at your own Keyright instance. These demo values talk to a live
+# demo product with high-seat keys, so you can run this file as-is.
+# --------------------------------------------------------------------------------------
+PRODUCT = "keyright-samples"
+SERVICE_URL = "https://keyright.delta1labs.com"
+# Your product's public key — dashboard -> Integration tab. Public by design (verifies leases).
+PUBLIC_KEY = (
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA49yyPov+ualJVqc4OUxf4b7rW8qNCkZnCMO/"
+    "osZ3EOIryeu40qSO346OoPXplA4Og7ao5Fdlflaq+bBceD0Brq16CvX3QW96U9g+b5R0YczZukcLVhDs7"
+    "Q9kxwdXDwfc/GFkbZclkV/4QfECGTtBdzm8WGKR9fkrpg9B9G+vpYZJbeug9z0f4WyeuB3/pgcnQHs2ss"
+    "VRzENXEwaM1fj3UXGCcBB3nNgcJTu2Z1+v6bAn/8CbwEctnIIMgjWCOnOSaamX0oLVf6FiaPAi2ZLwTbc"
+    "SE9ShAojfNuo5IonSSSP1vGCatJ1h4dkXLMsGOLZvRp/kdahruM7GCu+OeCNGsQIDAQAB"
+)
+
+# A license key is a per-customer credential (not configuration). These three demo keys
+# show the three license shapes a vendor sells.
+KEY_PERPETUAL = "LIC-62D24855E8EF1402370A"  # pro, never expires
+KEY_TERM      = "LIC-C28B4443F3BCC6E11ED9"  # enterprise, expires 2027-12-31
+KEY_TRIAL     = "LIC-BA010354EFF7A6F89076"  # enterprise, evaluation
+
+
+def client():
+    return KeyrightClient.initialize(KeyrightOptions(
+        product=PRODUCT,
+        public_key_base64=PUBLIC_KEY,
+        service_url=SERVICE_URL,
+    ))
+
+
+def banner(info):
+    """Turn a LicenseInfo into the one-line status a vendor would show in-app."""
+    if info.status != LicenseStatus.VALID:
+        return f"  [NOT LICENSED] {info.message}"
+    if info.is_trial:
+        left = f" ({info.days_remaining} days left)" if info.days_remaining is not None else ""
+        return f"  [EVALUATION] {info.licensee} - expires {_date(info.expiry_utc)}{left}"
+    if info.expiry_utc is None:
+        return f"  [LICENSED] {info.licensee} - perpetual (never expires)"
+    return f"  [LICENSED] {info.licensee} - expires {_date(info.expiry_utc)}"
+
+
+def warm_up():
+    """Send one cheap request first, in case the first call to the hosted service is slow."""
+    try:
+        urllib.request.urlopen(SERVICE_URL + "/health", timeout=60).read()
+    except Exception:
+        pass
+
+
+def _date(dt):
+    return dt.strftime("%d %b %Y") if dt else "(none)"
+
+
+def part_a_license_types():
+    print("\nA. License types - activate each key and read its state")
+    c = client()
+    for label, key in [("Perpetual", KEY_PERPETUAL), ("Term", KEY_TERM), ("Trial", KEY_TRIAL)]:
+        info = c.activate(key)
+        print(f" {label}:")
+        print(banner(info))
+        c.deactivate(key)  # free the seat again (this sample is just looking)
+
+
+def part_1_and_2_activate_deactivate():
+    print("\n1+2. Activate then deactivate a machine (online)")
+    c = client()
+
+    info = c.activate(KEY_PERPETUAL)
+    print(" activate() ->", info.status.name)
+    print(banner(info))
+
+    # After activation the signed lease is cached, so validate() works WITHOUT the network.
+    # validate() returns (LicenseInfo, source) — source tells you where the verdict came from.
+    offline_info, source = c.validate()
+    print(f" validate() offline from the cached lease -> {offline_info.status.name} (source: {source})")
+
+    status = c.deactivate(KEY_PERPETUAL)
+    print(" deactivate() ->", status, "(seat freed)")
+    print(" validate() after deactivation ->", c.validate()[0].status.name)
+
+
+def part_3_offline_activation():
+    print("\n3. Offline / air-gapped activation")
+    machine_id = MachineFingerprint.current().to_bound_string()
+    print(" this machine's id:", machine_id)
+
+    lease_path = os.path.join(os.path.dirname(__file__), "offline-lease.json")
+    if os.path.exists(lease_path):
+        with open(lease_path, encoding="utf-8") as f:
+            info = client().import_offline_lease(f.read())
+        print(" imported offline-lease.json ->", info.status.name)
+        print(banner(info))
+        print(" validate() offline ->", client().validate()[0].status.name)
+    else:
+        print(" No offline-lease.json found. To mint one for THIS machine, the vendor runs")
+        print(" (from a machine with connectivity + an admin token):")
+        print(f'   curl -X POST "{SERVICE_URL}/admin/licenses/{KEY_TERM}/offline-lease" \\')
+        print('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\')
+        print(f'        -d \'{{"machineId":"{machine_id}","days":365}}\'  > offline-lease.json')
+        print(" then re-run this sample - import_offline_lease() validates it with NO network.")
+
+
+def part_5_force_deactivate():
+    print("\n5. Force-deactivate a machine (vendor side)")
+    admin_token = os.environ.get("KEYRIGHT_ADMIN_TOKEN")
+    machine_id = MachineFingerprint.current().to_bound_string()
+    if admin_token:
+        req = urllib.request.Request(
+            f"{SERVICE_URL}/admin/licenses/{KEY_TERM}/free-seat",
+            data=b'{"machineId":"%s"}' % machine_id.encode(),
+            headers={"Content-Type": "application/json", "X-Admin-Token": admin_token},
+            method="POST",
+        )
+        try:
+            body = urllib.request.urlopen(req).read().decode()
+            print(" freed seat via admin endpoint ->", body)
+        except urllib.error.HTTPError as e:
+            print(" admin call failed:", e.code, e.read().decode()[:200])
+    else:
+        print(" Set KEYRIGHT_ADMIN_TOKEN to run this. It frees a customer's seat from YOUR backend,")
+        print(" without the client - e.g. a stuck seat after a machine dies. The call is:")
+        print(f'   curl -X POST "{SERVICE_URL}/admin/licenses/<LICENSE_KEY>/free-seat" \\')
+        print('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\')
+        print(f'        -d \'{{"machineId":"{machine_id}"}}\'')
+
+
+def main():
+    print("=" * 70)
+    print("Keyright Python SDK sample -", PRODUCT)
+    print("=" * 70)
+    warm_up()
+    part_a_license_types()
+    part_1_and_2_activate_deactivate()
+    part_3_offline_activation()
+    part_5_force_deactivate()
+    print("\n4. Offline deactivation: not a first-class flow yet. Free an offline machine's")
+    print("   seat vendor-side (op 5) when your backend has connectivity, or let its offline")
+    print("   lease lapse (it is issued with a finite TTL). See the repo README.")
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()

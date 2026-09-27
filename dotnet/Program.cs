@@ -1,0 +1,204 @@
+// Keyright - .NET SDK sample.
+//
+// Demonstrates the machine-licensing operations a software vendor needs:
+//   A. Read the license state (perpetual / term / evaluation) and show an eval banner
+//   1. Activate a machine (online)
+//   2. Deactivate a machine (online)
+//   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
+//   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
+//   5. Force-deactivate a machine (vendor side)
+//
+// Run:  dotnet run
+//
+// Everything below the CONFIG block is generic SDK usage - copy it into your app.
+
+using System.Globalization;
+using System.Text;
+using Keyright.Client;
+using Keyright.Licensing;
+using Keyright.NodeLock;
+
+// --------------------------------------------------------------------------------------
+// CONFIG - point these at your own Keyright instance. These demo values talk to a live
+// demo product with high-seat keys, so you can run this file as-is.
+// --------------------------------------------------------------------------------------
+const string Product = "keyright-samples";
+const string ServiceUrl = "https://keyright.delta1labs.com";
+// Your product's public key - dashboard -> Integration tab. Public by design (verifies leases).
+const string PublicKey =
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA49yyPov+ualJVqc4OUxf4b7rW8qNCkZnCMO/" +
+    "osZ3EOIryeu40qSO346OoPXplA4Og7ao5Fdlflaq+bBceD0Brq16CvX3QW96U9g+b5R0YczZukcLVhDs7" +
+    "Q9kxwdXDwfc/GFkbZclkV/4QfECGTtBdzm8WGKR9fkrpg9B9G+vpYZJbeug9z0f4WyeuB3/pgcnQHs2ss" +
+    "VRzENXEwaM1fj3UXGCcBB3nNgcJTu2Z1+v6bAn/8CbwEctnIIMgjWCOnOSaamX0oLVf6FiaPAi2ZLwTbc" +
+    "SE9ShAojfNuo5IonSSSP1vGCatJ1h4dkXLMsGOLZvRp/kdahruM7GCu+OeCNGsQIDAQAB";
+
+// A license key is a per-customer credential (not configuration). These three demo keys
+// show the three license shapes a vendor sells.
+const string KeyPerpetual = "LIC-62D24855E8EF1402370A";  // pro, never expires
+const string KeyTerm      = "LIC-C28B4443F3BCC6E11ED9";  // enterprise, expires 2027-12-31
+const string KeyTrial     = "LIC-BA010354EFF7A6F89076";  // enterprise, evaluation
+
+Console.WriteLine(new string('=', 70));
+Console.WriteLine($"Keyright .NET SDK sample - {Product}");
+Console.WriteLine(new string('=', 70));
+
+await WarmUp();
+await PartALicenseTypes();
+await Part1And2ActivateDeactivate();
+await Part3OfflineActivation();
+await Part5ForceDeactivate();
+
+Console.WriteLine();
+Console.WriteLine("4. Offline deactivation: not a first-class flow yet. Free an offline machine's");
+Console.WriteLine("   seat vendor-side (op 5) when your backend has connectivity, or let its offline");
+Console.WriteLine("   lease lapse (it is issued with a finite TTL). See the repo README.");
+Console.WriteLine();
+Console.WriteLine("Done.");
+return;
+
+// --------------------------------------------------------------------------------------
+// Generic SDK usage
+// --------------------------------------------------------------------------------------
+
+KeyrightClient Client() => KeyrightClient.Initialize(new KeyrightOptions
+{
+    Product = Product,
+    PublicKeyBase64 = PublicKey,
+    ServiceUrl = ServiceUrl,
+});
+
+// Turn a LicenseInfo into the one-line status a vendor would show in-app.
+string Banner(LicenseInfo info)
+{
+    if (info.Status != LicenseStatus.Valid)
+        return $"  [NOT LICENSED] {info.Message}";
+    if (info.IsTrial)
+    {
+        string left = info.DaysRemaining.HasValue ? $" ({info.DaysRemaining} days left)" : "";
+        return $"  [EVALUATION] {info.Licensee} - expires {FormatDate(info.ExpiryUtc)}{left}";
+    }
+    if (info.ExpiryUtc is null)
+        return $"  [LICENSED] {info.Licensee} - perpetual (never expires)";
+    return $"  [LICENSED] {info.Licensee} - expires {FormatDate(info.ExpiryUtc)}";
+}
+
+// Send one cheap request first, in case the first call to the hosted service is slow.
+async Task WarmUp()
+{
+    try
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
+        using var resp = await http.GetAsync($"{ServiceUrl}/health");
+        await resp.Content.ReadAsStringAsync();
+    }
+    catch
+    {
+        // Best effort - if the warm-up fails the real calls still try.
+    }
+}
+
+string FormatDate(DateTime? dt) =>
+    dt.HasValue ? dt.Value.ToString("dd MMM yyyy", CultureInfo.InvariantCulture) : "(none)";
+
+async Task PartALicenseTypes()
+{
+    Console.WriteLine();
+    Console.WriteLine("A. License types - activate each key and read its state");
+    var c = Client();
+    foreach (var (label, key) in new[] { ("Perpetual", KeyPerpetual), ("Term", KeyTerm), ("Trial", KeyTrial) })
+    {
+        var info = await c.ActivateAsync(key);
+        Console.WriteLine($" {label}:");
+        Console.WriteLine(Banner(info));
+        await c.DeactivateAsync(key);  // free the seat again (this sample is just looking)
+    }
+}
+
+async Task Part1And2ActivateDeactivate()
+{
+    Console.WriteLine();
+    Console.WriteLine("1+2. Activate then deactivate a machine (online)");
+    var c = Client();
+
+    var info = await c.ActivateAsync(KeyPerpetual);
+    Console.WriteLine($" ActivateAsync() -> {info.Status}");
+    Console.WriteLine(Banner(info));
+
+    // After activation the signed lease is cached, so Validate() works WITHOUT the network.
+    // Validate(out source) also tells you where the verdict came from.
+    var offlineInfo = c.Validate(out var source);
+    Console.WriteLine($" Validate() offline from the cached lease -> {offlineInfo.Status} (source: {source})");
+
+    var status = await c.DeactivateAsync(KeyPerpetual);
+    Console.WriteLine($" DeactivateAsync() -> {status} (seat freed)");
+    Console.WriteLine($" Validate() after deactivation -> {c.Validate().Status}");
+}
+
+async Task Part3OfflineActivation()
+{
+    Console.WriteLine();
+    Console.WriteLine("3. Offline / air-gapped activation");
+    string machineId = MachineFingerprint.Current().ToBoundString();
+    Console.WriteLine($" this machine's id: {machineId}");
+
+    string leasePath = Path.Combine(AppContext.BaseDirectory, "offline-lease.json");
+    if (!File.Exists(leasePath))
+        leasePath = Path.Combine(Directory.GetCurrentDirectory(), "offline-lease.json");
+
+    if (File.Exists(leasePath))
+    {
+        var info = Client().ImportOfflineLease(await File.ReadAllTextAsync(leasePath));
+        Console.WriteLine($" imported offline-lease.json -> {info.Status}");
+        Console.WriteLine(Banner(info));
+        Console.WriteLine($" Validate() offline -> {Client().Validate().Status}");
+    }
+    else
+    {
+        Console.WriteLine(" No offline-lease.json found. To mint one for THIS machine, the vendor runs");
+        Console.WriteLine(" (from a machine with connectivity + an admin token):");
+        Console.WriteLine($"   curl -X POST \"{ServiceUrl}/admin/licenses/{KeyTerm}/offline-lease\" \\");
+        Console.WriteLine("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+        Console.WriteLine($"        -d '{{\"machineId\":\"{machineId}\",\"days\":365}}'  > offline-lease.json");
+        Console.WriteLine(" then re-run this sample - ImportOfflineLease() validates it with NO network.");
+    }
+}
+
+async Task Part5ForceDeactivate()
+{
+    Console.WriteLine();
+    Console.WriteLine("5. Force-deactivate a machine (vendor side)");
+    string? adminToken = Environment.GetEnvironmentVariable("KEYRIGHT_ADMIN_TOKEN");
+    string machineId = MachineFingerprint.Current().ToBoundString();
+    if (!string.IsNullOrEmpty(adminToken))
+    {
+        try
+        {
+            using var http = new HttpClient();
+            using var content = new StringContent(
+                $"{{\"machineId\":\"{machineId}\"}}", Encoding.UTF8, "application/json");
+            using var req = new HttpRequestMessage(
+                HttpMethod.Post, $"{ServiceUrl}/admin/licenses/{KeyTerm}/free-seat") { Content = content };
+            req.Headers.TryAddWithoutValidation("X-Admin-Token", adminToken);
+            using var resp = await http.SendAsync(req);
+            string body = await resp.Content.ReadAsStringAsync();
+            if (resp.IsSuccessStatusCode)
+                Console.WriteLine($" freed seat via admin endpoint -> {body}");
+            else
+                Console.WriteLine($" admin call failed: {(int)resp.StatusCode} {Trunc(body, 200)}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($" admin call failed: {ex.Message}");
+        }
+    }
+    else
+    {
+        Console.WriteLine(" Set KEYRIGHT_ADMIN_TOKEN to run this. It frees a customer's seat from YOUR backend,");
+        Console.WriteLine(" without the client - e.g. a stuck seat after a machine dies. The call is:");
+        Console.WriteLine($"   curl -X POST \"{ServiceUrl}/admin/licenses/<LICENSE_KEY>/free-seat\" \\");
+        Console.WriteLine("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+        Console.WriteLine($"        -d '{{\"machineId\":\"{machineId}\"}}'");
+    }
+}
+
+static string Trunc(string s, int max) => s.Length <= max ? s : s.Substring(0, max);

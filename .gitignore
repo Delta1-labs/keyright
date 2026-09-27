@@ -1,0 +1,24 @@
+# Node
+node_modules/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# .NET
+bin/
+obj/
+
+# Java
+target/
+
+# Generated at runtime by the offline-activation sample (machine-bound)
+offline-lease.json
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

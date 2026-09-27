@@ -1,0 +1,13 @@
+{
+  "name": "keyright-node-sample",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Keyright Node.js SDK sample - the full machine-licensing walkthrough.",
+  "main": "samples.js",
+  "scripts": {
+    "start": "node samples.js"
+  },
+  "dependencies": {
+    "keyright": "^1.1.4"
+  }
+}
