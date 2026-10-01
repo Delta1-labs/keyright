@@ -8,8 +8,9 @@ Demonstrates the machine-licensing operations a software vendor needs:
   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
   5. Force-deactivate a machine (vendor side)
+  6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
 
-Run:  pip install keyright>=1.1.4  &&  python samples.py
+Run:  pip install keyright>=1.2.0  &&  python samples.py
 
 Everything below the CONFIG block is generic SDK usage — copy it into your app.
 """
@@ -59,14 +60,6 @@ def banner(info):
     if info.expiry_utc is None:
         return f"  [LICENSED] {info.licensee} - perpetual (never expires)"
     return f"  [LICENSED] {info.licensee} - expires {_date(info.expiry_utc)}"
-
-
-def warm_up():
-    """Send one cheap request first, in case the first call to the hosted service is slow."""
-    try:
-        urllib.request.urlopen(SERVICE_URL + "/health", timeout=60).read()
-    except Exception:
-        pass
 
 
 def _date(dt):
@@ -146,15 +139,52 @@ def part_5_force_deactivate():
         print(f'        -d \'{{"machineId":"{machine_id}"}}\'')
 
 
+def part_6_credits():
+    print("\n6. Credits / metered usage (consumption billing)")
+    action = "render"  # a metered action your product charges credits for
+    c = client()
+
+    # Read the credit pools bound to this key. License-key auth - no admin token, no offline fallback.
+    pools = c.balance(KEY_PERPETUAL)
+    if not pools:
+        print(" balance() -> no credit pools bound to this key yet")
+    for p in pools:
+        print(f" balance() -> {p.name}: {p.balance} {p.unit}")
+
+    # Price the action WITHOUT deducting (dry_run) - safe to call anytime, e.g. to show a cost preview.
+    quote = c.consume(KEY_PERPETUAL, action, quantity=1, dry_run=True)
+    if quote.status == "ok":
+        print(f" consume(dry_run) -> one '{action}' costs {quote.total_cost} {quote.unit} "
+              f"from pool {quote.pool_id} (balance {quote.balance})")
+        # The real charge. A fixed idempotency_key makes retries safe: the first call deducts; re-runs
+        # replay the same result WITHOUT charging again (so a network retry never double-bills).
+        res = c.consume(KEY_PERPETUAL, action, quantity=1, idempotency_key="keyright-sample-consume")
+        replay = " (idempotent replay - re-runs never double-charge)" if res.idempotent else ""
+        print(f" consume() -> {res.status}; charged {res.total_cost} {res.unit}, balance now {res.balance}{replay}")
+    else:
+        print(f" This demo product has no metered '{action}' action / pool configured yet (status: {quote.status}).")
+        print(" One-time vendor setup (from a machine with your product admin token):")
+        print(f'   curl -X POST "{SERVICE_URL}/admin/products/{PRODUCT}/action-costs" \\')
+        print('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\')
+        print(f'        -d \'{{"action":"{action}","credits":1}}\'')
+        print(f'   curl -X POST "{SERVICE_URL}/admin/credit-pools" \\')
+        print('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\')
+        print(f'        -d \'{{"licenseId":"{KEY_PERPETUAL}","product":"{PRODUCT}","name":"Render credits","unit":"renders"}}\'  # -> {{"id":"pool_..."}}')
+        print(f'   curl -X POST "{SERVICE_URL}/admin/credit-pools/<POOL_ID>/grant" \\')
+        print('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\')
+        print('        -d \'{"amount":1000}\'')
+        print(" then re-run this sample - balance() and consume() show real numbers.")
+
+
 def main():
     print("=" * 70)
     print("Keyright Python SDK sample -", PRODUCT)
     print("=" * 70)
-    warm_up()
     part_a_license_types()
     part_1_and_2_activate_deactivate()
     part_3_offline_activation()
     part_5_force_deactivate()
+    part_6_credits()
     print("\n4. Offline deactivation: not a first-class flow yet. Free an offline machine's")
     print("   seat vendor-side (op 5) when your backend has connectivity, or let its offline")
     print("   lease lapse (it is issued with a finite TTL). See the repo README.")

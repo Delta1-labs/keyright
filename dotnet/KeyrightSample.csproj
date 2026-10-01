@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Keyright.NET" Version="1.1.4" />
+    <PackageReference Include="Keyright.NET" Version="1.2.0" />
   </ItemGroup>
 
 </Project>

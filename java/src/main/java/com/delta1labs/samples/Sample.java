@@ -10,17 +10,20 @@ package com.delta1labs.samples;
  *   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
  *   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
  *   5. Force-deactivate a machine (vendor side)
+ *   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
  *
  * Run:  mvn compile exec:java
  *
  * Everything below the CONFIG block is generic SDK usage — copy it into your app.
  */
 
+import com.delta1labs.keyright.ConsumeResult;
 import com.delta1labs.keyright.KeyrightClient;
 import com.delta1labs.keyright.KeyrightOptions;
 import com.delta1labs.keyright.LicenseInfo;
 import com.delta1labs.keyright.LicenseStatus;
 import com.delta1labs.keyright.MachineFingerprint;
+import com.delta1labs.keyright.PoolBalance;
 
 import java.io.File;
 import java.net.URI;
@@ -33,6 +36,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.time.format.DateTimeFormatter;
+import java.util.List;
 import java.util.Locale;
 
 public final class Sample {
@@ -81,17 +85,6 @@ public final class Sample {
             return "  [LICENSED] " + info.licensee + " - perpetual (never expires)";
         }
         return "  [LICENSED] " + info.licensee + " - expires " + date(info.expiryUtc);
-    }
-
-    /** Send one cheap request first, in case the first call to the hosted service is slow. */
-    static void warmUp() {
-        try {
-            HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(60)).build();
-            HttpRequest req = HttpRequest.newBuilder(URI.create(SERVICE_URL + "/health"))
-                    .timeout(Duration.ofSeconds(60)).GET().build();
-            http.send(req, HttpResponse.BodyHandlers.ofString());
-        } catch (Exception ignored) {
-        }
     }
 
     static String date(Instant dt) {
@@ -194,15 +187,52 @@ public final class Sample {
         }
     }
 
+    static void part6Credits() {
+        System.out.println("\n6. Credits / metered usage (consumption billing)");
+        String action = "render";  // a metered action your product charges credits for
+        KeyrightClient c = client();
+
+        // Read the credit pools bound to this key. License-key auth - no admin token, no offline fallback.
+        List<PoolBalance> pools = c.balance(KEY_PERPETUAL);
+        if (pools.isEmpty()) System.out.println(" balance() -> no credit pools bound to this key yet");
+        for (PoolBalance p : pools) System.out.println(" balance() -> " + p.name + ": " + p.balance + " " + p.unit);
+
+        // Price the action WITHOUT deducting (dryRun) - safe to call anytime, e.g. to show a cost preview.
+        ConsumeResult quote = c.consume(KEY_PERPETUAL, action, 1, null, true);
+        if ("ok".equals(quote.status)) {
+            System.out.println(" consume(dryRun) -> one '" + action + "' costs " + quote.totalCost + " " + quote.unit
+                    + " from pool " + quote.poolId + " (balance " + quote.balance + ")");
+            // The real charge. A fixed idempotencyKey makes retries safe: the first call deducts; re-runs
+            // replay the same result WITHOUT charging again (so a network retry never double-bills).
+            ConsumeResult res = c.consume(KEY_PERPETUAL, action, 1, "keyright-sample-consume", false);
+            String replay = res.idempotent ? " (idempotent replay - re-runs never double-charge)" : "";
+            System.out.println(" consume() -> " + res.status + "; charged " + res.totalCost + " " + res.unit
+                    + ", balance now " + res.balance + replay);
+        } else {
+            System.out.println(" This demo product has no metered '" + action + "' action / pool configured yet (status: " + quote.status + ").");
+            System.out.println(" One-time vendor setup (from a machine with your product admin token):");
+            System.out.println("   curl -X POST \"" + SERVICE_URL + "/admin/products/" + PRODUCT + "/action-costs\" \\");
+            System.out.println("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+            System.out.println("        -d '{\"action\":\"" + action + "\",\"credits\":1}'");
+            System.out.println("   curl -X POST \"" + SERVICE_URL + "/admin/credit-pools\" \\");
+            System.out.println("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+            System.out.println("        -d '{\"licenseId\":\"" + KEY_PERPETUAL + "\",\"product\":\"" + PRODUCT + "\",\"name\":\"Render credits\",\"unit\":\"renders\"}'  # -> {\"id\":\"pool_...\"}");
+            System.out.println("   curl -X POST \"" + SERVICE_URL + "/admin/credit-pools/<POOL_ID>/grant\" \\");
+            System.out.println("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+            System.out.println("        -d '{\"amount\":1000}'");
+            System.out.println(" then re-run this sample - balance() and consume() show real numbers.");
+        }
+    }
+
     public static void main(String[] args) {
         System.out.println("=".repeat(70));
         System.out.println("Keyright Java SDK sample - " + PRODUCT);
         System.out.println("=".repeat(70));
-        warmUp();
         partALicenseTypes();
         part1And2ActivateDeactivate();
         part3OfflineActivation();
         part5ForceDeactivate();
+        part6Credits();
         System.out.println("\n4. Offline deactivation: not a first-class flow yet. Free an offline machine's");
         System.out.println("   seat vendor-side (op 5) when your backend has connectivity, or let its offline");
         System.out.println("   lease lapse (it is issued with a finite TTL). See the repo README.");

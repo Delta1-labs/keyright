@@ -7,6 +7,7 @@
 //   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
 //   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
 //   5. Force-deactivate a machine (vendor side)
+//   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
 //
 // Run:  dotnet run
 //
@@ -42,11 +43,11 @@ Console.WriteLine(new string('=', 70));
 Console.WriteLine($"Keyright .NET SDK sample - {Product}");
 Console.WriteLine(new string('=', 70));
 
-await WarmUp();
 await PartALicenseTypes();
 await Part1And2ActivateDeactivate();
 await Part3OfflineActivation();
 await Part5ForceDeactivate();
+await Part6Credits();
 
 Console.WriteLine();
 Console.WriteLine("4. Offline deactivation: not a first-class flow yet. Free an offline machine's");
@@ -80,21 +81,6 @@ string Banner(LicenseInfo info)
     if (info.ExpiryUtc is null)
         return $"  [LICENSED] {info.Licensee} - perpetual (never expires)";
     return $"  [LICENSED] {info.Licensee} - expires {FormatDate(info.ExpiryUtc)}";
-}
-
-// Send one cheap request first, in case the first call to the hosted service is slow.
-async Task WarmUp()
-{
-    try
-    {
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(60) };
-        using var resp = await http.GetAsync($"{ServiceUrl}/health");
-        await resp.Content.ReadAsStringAsync();
-    }
-    catch
-    {
-        // Best effort - if the warm-up fails the real calls still try.
-    }
 }
 
 string FormatDate(DateTime? dt) =>
@@ -198,6 +184,48 @@ async Task Part5ForceDeactivate()
         Console.WriteLine($"   curl -X POST \"{ServiceUrl}/admin/licenses/<LICENSE_KEY>/free-seat\" \\");
         Console.WriteLine("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
         Console.WriteLine($"        -d '{{\"machineId\":\"{machineId}\"}}'");
+    }
+}
+
+async Task Part6Credits()
+{
+    Console.WriteLine();
+    Console.WriteLine("6. Credits / metered usage (consumption billing)");
+    const string action = "render";  // a metered action your product charges credits for
+    var c = Client();
+
+    // Read the credit pools bound to this key. License-key auth - no admin token, no offline fallback.
+    var pools = await c.BalanceAsync(KeyPerpetual);
+    if (pools.Count == 0)
+        Console.WriteLine(" BalanceAsync() -> no credit pools bound to this key yet");
+    foreach (var pool in pools)
+        Console.WriteLine($" BalanceAsync() -> {pool.Name}: {pool.Balance} {pool.Unit}");
+
+    // Price the action WITHOUT deducting (dryRun) - safe to call anytime, e.g. to show a cost preview.
+    var quote = await c.ConsumeAsync(KeyPerpetual, action, quantity: 1, dryRun: true);
+    if (quote.Status == "ok")
+    {
+        Console.WriteLine($" ConsumeAsync(dryRun) -> one '{action}' costs {quote.TotalCost} {quote.Unit} from pool {quote.PoolId} (balance {quote.Balance})");
+        // The real charge. A fixed idempotencyKey makes retries safe: the first call deducts; re-runs
+        // replay the same result WITHOUT charging again (so a network retry never double-bills).
+        var res = await c.ConsumeAsync(KeyPerpetual, action, quantity: 1, idempotencyKey: "keyright-sample-consume");
+        string replay = res.Idempotent ? " (idempotent replay - re-runs never double-charge)" : "";
+        Console.WriteLine($" ConsumeAsync() -> {res.Status}; charged {res.TotalCost} {res.Unit}, balance now {res.Balance}{replay}");
+    }
+    else
+    {
+        Console.WriteLine($" This demo product has no metered '{action}' action / pool configured yet (status: {quote.Status}).");
+        Console.WriteLine(" One-time vendor setup (from a machine with your product admin token):");
+        Console.WriteLine($"   curl -X POST \"{ServiceUrl}/admin/products/{Product}/action-costs\" \\");
+        Console.WriteLine("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+        Console.WriteLine($"        -d '{{\"action\":\"{action}\",\"credits\":1}}'");
+        Console.WriteLine($"   curl -X POST \"{ServiceUrl}/admin/credit-pools\" \\");
+        Console.WriteLine("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+        Console.WriteLine($"        -d '{{\"licenseId\":\"{KeyPerpetual}\",\"product\":\"{Product}\",\"name\":\"Render credits\",\"unit\":\"renders\"}}'  # -> {{\"id\":\"pool_...\"}}");
+        Console.WriteLine($"   curl -X POST \"{ServiceUrl}/admin/credit-pools/<POOL_ID>/grant\" \\");
+        Console.WriteLine("        -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" -H \"Content-Type: application/json\" \\");
+        Console.WriteLine("        -d '{\"amount\":1000}'");
+        Console.WriteLine(" then re-run this sample - BalanceAsync() and ConsumeAsync() show real numbers.");
     }
 }
 

@@ -8,6 +8,6 @@
     "start": "node samples.js"
   },
   "dependencies": {
-    "keyright": "^1.1.4"
+    "keyright": "^1.2.0"
   }
 }

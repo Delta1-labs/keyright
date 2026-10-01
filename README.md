@@ -11,6 +11,7 @@ Each sample walks through the machine-licensing lifecycle a vendor cares about:
 | 3 | **Offline / air-gapped activation** | Activate a machine that has no internet: the vendor issues a signed lease from the machine's ID, the client imports it and validates fully offline. |
 | 4 | **Offline deactivation** | *Not yet a first-class flow — see [the note below](#a-note-on-offline-deactivation).* |
 | 5 | **Force-deactivate (vendor side)** | You free a stuck seat for a customer from your backend, without needing the client. |
+| 6 | **Credits / metered usage** | Read a key's credit-pool balance, price a metered action with a dry run, then consume credits — with an idempotency key so retries never double-charge. |
 
 Plus a bonus every trial-ware vendor needs:
 
@@ -29,7 +30,7 @@ Keyright ships a native SDK for each platform. They are byte-for-byte compatible
 | Node.js 16+ | [`keyright`](https://www.npmjs.com/package/keyright) | `npm install keyright` |
 | Python 3.8+ | [`keyright`](https://pypi.org/project/keyright/) | `pip install keyright` |
 
-All samples target SDK **1.1.3** or later.
+All samples target SDK **1.2.0** or later (operation 6, credits / metered usage, needs 1.2.0).
 
 ---
 
@@ -77,6 +78,35 @@ There is currently **no signed offline *deactivation* receipt** (a client-genera
 - **Let it lapse** — an offline lease is issued with a finite TTL; once it expires the machine stops validating on its own.
 
 The samples demonstrate both. If offline deactivation matters for your use case, [let us know](https://keyright.delta1labs.com).
+
+---
+
+## Credits / metered usage (operation 6)
+
+Beyond seat-based licensing, Keyright can meter **consumption** — credits a customer spends per action (renders, API calls, exports…). The SDKs expose two license-key calls (no admin token):
+
+- **`balance(licenseKey)`** — the remaining balance of each credit pool bound to the key.
+- **`consume(licenseKey, action, …)`** — spend credits for an `action`. Pass `dryRun` to **price** an action without charging, and an `idempotencyKey` so a retried call **replays** instead of charging twice.
+
+The samples always call `balance` and a dry-run `consume`. They perform a real `consume` only when the demo product has the action configured; otherwise they print the one-time vendor setup. To light it up on your own instance (or on the demo, if it's yours), run these once with your product admin token:
+
+```bash
+SVC=https://keyright.delta1labs.com
+# 1. price a metered action
+curl -X POST "$SVC/admin/products/keyright-samples/action-costs" \
+     -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \
+     -d '{"action":"render","credits":1}'
+# 2. create a credit pool bound to a license key  (-> returns {"id":"pool_..."})
+curl -X POST "$SVC/admin/credit-pools" \
+     -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \
+     -d '{"licenseId":"LIC-62D24855E8EF1402370A","product":"keyright-samples","name":"Render credits","unit":"renders"}'
+# 3. grant credits to that pool
+curl -X POST "$SVC/admin/credit-pools/<POOL_ID>/grant" \
+     -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \
+     -d '{"amount":1000}'
+```
+
+Re-run any sample afterward and operation 6 reports real balances and a live deduction.
 
 ---
 

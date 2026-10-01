@@ -8,6 +8,7 @@
  *   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
  *   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
  *   5. Force-deactivate a machine (vendor side)
+ *   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
  *
  * Run:  npm install  &&  npm start
  *
@@ -76,23 +77,6 @@ function banner(info) {
     return '  [LICENSED] ' + info.licensee + ' - perpetual (never expires)';
   }
   return '  [LICENSED] ' + info.licensee + ' - expires ' + fmtDate(info.expiryUtc);
-}
-
-// Send one cheap request first, in case the first call to the hosted service is slow.
-function warmUp() {
-  return new Promise((resolve) => {
-    try {
-      const lib = SERVICE_URL.startsWith('https') ? https : http;
-      const req = lib.get(SERVICE_URL + '/health', { timeout: 60000 }, (res) => {
-        res.on('data', () => {});
-        res.on('end', resolve);
-      });
-      req.on('error', () => resolve());
-      req.on('timeout', () => { req.destroy(); resolve(); });
-    } catch (e) {
-      resolve();
-    }
-  });
 }
 
 function httpPost(url, payloadObj, headers) {
@@ -194,15 +178,53 @@ async function part5ForceDeactivate() {
   }
 }
 
+async function part6Credits() {
+  console.log('\n6. Credits / metered usage (consumption billing)');
+  const action = 'render'; // a metered action your product charges credits for
+  const c = client();
+
+  // Read the credit pools bound to this key. License-key auth - no admin token, no offline fallback.
+  const bal = await c.balance(KEY_PERPETUAL);
+  const pools = bal.pools || [];
+  if (pools.length === 0) console.log(' balance() -> no credit pools bound to this key yet');
+  for (const p of pools) console.log(' balance() -> ' + p.name + ': ' + p.balance + ' ' + p.unit);
+
+  // Price the action WITHOUT deducting (dryRun) - safe to call anytime, e.g. to show a cost preview.
+  const quote = await c.consume(KEY_PERPETUAL, action, { quantity: 1, dryRun: true });
+  if (quote.status === 'ok') {
+    console.log(" consume({dryRun}) -> one '" + action + "' costs " + quote.totalCost + ' ' + quote.unit +
+      ' from pool ' + quote.poolId + ' (balance ' + quote.balance + ')');
+    // The real charge. A fixed idempotencyKey makes retries safe: the first call deducts; re-runs
+    // replay the same result WITHOUT charging again (so a network retry never double-bills).
+    const res = await c.consume(KEY_PERPETUAL, action, { quantity: 1, idempotencyKey: 'keyright-sample-consume' });
+    const replay = res.idempotent ? ' (idempotent replay - re-runs never double-charge)' : '';
+    console.log(' consume() -> ' + res.status + '; charged ' + res.totalCost + ' ' + res.unit +
+      ', balance now ' + res.balance + replay);
+  } else {
+    console.log(" This demo product has no metered '" + action + "' action / pool configured yet (status: " + quote.status + ').');
+    console.log(' One-time vendor setup (from a machine with your product admin token):');
+    console.log('   curl -X POST "' + SERVICE_URL + '/admin/products/' + PRODUCT + '/action-costs" \\');
+    console.log('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\');
+    console.log('        -d \'{"action":"' + action + '","credits":1}\'');
+    console.log('   curl -X POST "' + SERVICE_URL + '/admin/credit-pools" \\');
+    console.log('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\');
+    console.log('        -d \'{"licenseId":"' + KEY_PERPETUAL + '","product":"' + PRODUCT + '","name":"Render credits","unit":"renders"}\'  # -> {"id":"pool_..."}');
+    console.log('   curl -X POST "' + SERVICE_URL + '/admin/credit-pools/<POOL_ID>/grant" \\');
+    console.log('        -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \\');
+    console.log('        -d \'{"amount":1000}\'');
+    console.log(' then re-run this sample - balance() and consume() show real numbers.');
+  }
+}
+
 async function main() {
   console.log('='.repeat(70));
   console.log('Keyright Node.js SDK sample -', PRODUCT);
   console.log('='.repeat(70));
-  await warmUp();
   await partALicenseTypes();
   await part1And2ActivateDeactivate();
   part3OfflineActivation();
   await part5ForceDeactivate();
+  await part6Credits();
   console.log('\n4. Offline deactivation: not a first-class flow yet. Free an offline machine\'s');
   console.log('   seat vendor-side (op 5) when your backend has connectivity, or let its offline');
   console.log('   lease lapse (it is issued with a finite TTL). See the repo README.');
