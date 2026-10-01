@@ -1,6 +1,6 @@
 # Keyright SDK samples
 
-Runnable examples showing how to add **[Keyright](https://keyright.delta1labs.com)** software licensing to your product, in **.NET, Java, Node.js, and Python**.
+Runnable examples showing how to add **[Keyright](https://keyright.delta1labs.com)** software licensing to your product, in **.NET, Java, Node.js, and Python** — plus a **[raw Web API (REST)](./rest)** walkthrough in `curl` for every other language (Go, Ruby, PHP, Rust, C/C++, …).
 
 Each sample walks through the machine-licensing lifecycle a vendor cares about:
 
@@ -63,8 +63,9 @@ Pick your language:
 - **[Java ->](./java)**
 - **[Node.js ->](./node)**
 - **[Python ->](./python)**
+- **[Any other language (raw REST / `curl`) ->](./rest)**
 
-Every folder has its own README with the exact commands. All four samples print the same walkthrough so you can compare them side by side.
+Every folder has its own README with the exact commands. All four SDK samples print the same walkthrough so you can compare them side by side; the REST sample shows the same operations as plain HTTP calls to port anywhere.
 
 ---
 
