@@ -27,11 +27,7 @@ const string Product = "keyright-samples";
 const string ServiceUrl = "https://keyright.delta1labs.com";
 // Your product's public key - dashboard -> Integration tab. Public by design (verifies leases).
 const string PublicKey =
-    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA49yyPov+ualJVqc4OUxf4b7rW8qNCkZnCMO/" +
-    "osZ3EOIryeu40qSO346OoPXplA4Og7ao5Fdlflaq+bBceD0Brq16CvX3QW96U9g+b5R0YczZukcLVhDs7" +
-    "Q9kxwdXDwfc/GFkbZclkV/4QfECGTtBdzm8WGKR9fkrpg9B9G+vpYZJbeug9z0f4WyeuB3/pgcnQHs2ss" +
-    "VRzENXEwaM1fj3UXGCcBB3nNgcJTu2Z1+v6bAn/8CbwEctnIIMgjWCOnOSaamX0oLVf6FiaPAi2ZLwTbc" +
-    "SE9ShAojfNuo5IonSSSP1vGCatJ1h4dkXLMsGOLZvRp/kdahruM7GCu+OeCNGsQIDAQAB";
+    "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAue3WvsvVD096ar3P8IUlUhiRz/BzYLqhpQFamTIXjlHWl0P0169sFnOzXWH+MUON+RooSTiAZ4aymQuyydHh7qgy9aq3L+0BbBe31qZOqDRjDBDmsUok7LXQ9v5cineXWEG8+k0NYzo5Rdb8IvfroM2O/VAx3XKk3hbNT/jM/C8jV2dq6rsF3ZzKE2OK63xMHJHY0KyAruXxx6PklqrqpWEtu4RHTSKTMbrVGCVYS0BP8mdHlC17I8KO5T0cykG4xfFc4P3WxfgN9+dSIvhjZwXCzMHpUQL1xod0i7/IMy+oWLkLQSlx/ClMLXOGI9CLQofVOeU+UPQERLNTAlBMJwIDAQAB";
 
 // A license key is a per-customer credential (not configuration). These three demo keys
 // show the three license shapes a vendor sells.
