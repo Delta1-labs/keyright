@@ -5,6 +5,7 @@ package com.delta1labs.samples;
  *
  * Demonstrates the machine-licensing operations a software vendor needs:
  *   A. Read the license state (perpetual / term / evaluation) and show an eval banner
+ *   B. Read the activation response (edition/tier, expiry), store it tamper-proof, read it back offline
  *   1. Activate a machine (online)
  *   2. Deactivate a machine (online)
  *   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
@@ -220,11 +221,67 @@ public final class Sample {
         }
     }
 
+    // B. The four things every licensed app does after it has a key: activate, READ the response (tier / when
+    //    it expires), STORE that proof so it survives restarts and can't be forged, and READ it back offline.
+    static void partBResponseStoreTamper() {
+        System.out.println("\nB. Activation response -> tamper-proof storage -> read it back offline");
+        KeyrightClient c = client();
+
+        // 1) Activate with a key and READ the response - not just "ok", the whole license:
+        LicenseInfo info = c.activate(KEY_TERM);
+        System.out.println("   status        : " + info.status.name());
+        System.out.println("   licensee      : " + info.licensee);
+        System.out.println("   edition/tier  : " + info.edition + "      <- the tier that was activated");
+        System.out.println("   expires       : " + fmtExpiry(info.expiryUtc) + (info.isTrial ? "  (TRIAL / evaluation)" : ""));
+        if (info.daysRemaining() != null) System.out.println("   days remaining: " + info.daysRemaining());
+        System.out.println("   entitlements  : " + info.entitlements);
+
+        // 2) Where it is STORED. Online activation writes a SIGNED lease here automatically - the
+        //    tamper-resistant record on the machine. It is RSA-signed by YOUR server and verified against the
+        //    embedded public key, so a user cannot edit it to grant a higher tier or a later expiry. (Nothing
+        //    secret is in it - the security is the signature, not hiding the file.)
+        String leasePath = c.leaseCachePath();
+        System.out.println("   stored lease  : " + leasePath);
+
+        // 3) READ IT BACK with NO network, to decide licensed-vs-trial and days-left on every launch:
+        KeyrightClient.Result r = c.validate();
+        String tail = r.info.daysRemaining() != null ? ", " + r.info.daysRemaining() + " days left" : "";
+        System.out.println("   read offline  : " + r.info.status.name() + " / " + r.info.edition + " / "
+                + (r.info.isTrial ? "TRIAL" : "LICENSED") + tail + " (source: " + r.source + ")");
+
+        // 4) Prove it is tamper-PROOF: edit the stored lease (as an attacker would, to fake a license) and
+        //    re-verify it - the signature no longer matches, so the SDK refuses it instead of trusting it.
+        try {
+            String good = new String(Files.readAllBytes(new File(leasePath).toPath()), StandardCharsets.UTF_8);
+            LicenseInfo forged = c.importOfflineLease(flipOneChar(good));   // same verify path as validate()
+            boolean rejected = forged.status != LicenseStatus.VALID;
+            System.out.println("   tamper test   : edited the stored lease -> " + forged.status.name()
+                    + (rejected ? " (REJECTED - tampering is detected)" : " (!! unexpectedly accepted)"));
+        } catch (Exception e) {
+            System.out.println("   tamper test   : could not read the stored lease: " + e.getMessage());
+        }
+
+        c.deactivate(KEY_TERM);   // free this sample's seat again
+    }
+
+    // Flip one character inside the stored lease so its bytes no longer match the signature.
+    static String flipOneChar(String s) {
+        if (s == null || s.isEmpty()) return s;
+        int i = s.length() / 2;
+        char ch = s.charAt(i) == 'a' ? 'b' : 'a';
+        return s.substring(0, i) + ch + s.substring(i + 1);
+    }
+
+    static String fmtExpiry(java.time.Instant expiry) {
+        return expiry == null ? "(none)" : DATE_FMT.format(expiry);
+    }
+
     public static void main(String[] args) {
         System.out.println("=".repeat(70));
         System.out.println("Keyright Java SDK sample - " + PRODUCT);
         System.out.println("=".repeat(70));
         partALicenseTypes();
+        partBResponseStoreTamper();
         part1And2ActivateDeactivate();
         part3OfflineActivation();
         part5ForceDeactivate();

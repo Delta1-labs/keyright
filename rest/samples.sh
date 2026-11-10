@@ -8,6 +8,7 @@
 # as the .NET/Java/Node/Python samples using only `curl` - port these calls to your language.
 #
 #   A. Read the license state (activate returns licensee / tier / expiry / trial)
+#   B. Read the activation response (tier/expiry), store the signed lease, re-check (tamper-proof)
 #   1+2. Activate then free a machine's seat (online)
 #   6. Credits / metered usage - balance, dry-run pricing, and consume
 #   5. Force-deactivate a seat (vendor side; needs your product admin token)
@@ -73,6 +74,33 @@ req /v1/free-seat "{\"key\":\"$KEY_PERPETUAL\",\"product\":\"$PRODUCT\",\"machin
 # cache and verify it so validate() works OFFLINE. In a non-SDK language, verify the lease signature
 # against your product's PUBLIC key (dashboard -> Integration tab) with your crypto library before
 # trusting it offline; online, the /v1/validate verdict above is authoritative.
+
+echo
+echo "B. Activation response -> read tier/expiry -> store the signed lease -> re-check (tamper-proof)"
+# Capture the activate response so we can read individual fields and save the signed lease.
+RESP=$(curl -sS -X POST "$SVC/v1/activate" -H "Content-Type: application/json" \
+  -d "{\"key\":\"$KEY_TERM\",\"product\":\"$PRODUCT\",\"machineId\":\"$MACHINE_ID\"}")
+if command -v jq >/dev/null 2>&1; then
+  # 1) READ the response: the activated tier, when it expires, and seat usage.
+  echo "   status        : $(echo "$RESP" | jq -r '.status')"
+  echo "   licensee      : $(echo "$RESP" | jq -r '.license.licensee // "-"')"
+  echo "   tier          : $(echo "$RESP" | jq -r '.license.tier // "-"')      <- the tier that was activated"
+  trial=$(echo "$RESP" | jq -r '.license.trial')
+  echo "   expires       : $(echo "$RESP" | jq -r '.license.expiryUtc // "(perpetual)"')$([ "$trial" = "true" ] && echo "  (TRIAL)")"
+  echo "   seats         : $(echo "$RESP" | jq -r '.used')/$(echo "$RESP" | jq -r '.seats') in use"
+  # 2) STORE the signed lease. The `lease` field is RSA-signed by your product key, so it is a tamper-proof
+  #    record: a user who edits it fails signature verification. Save it to read the license offline.
+  echo "$RESP" | jq -r '.lease' > keyright-lease.json
+  echo "   stored lease  : keyright-lease.json  (signed; verify against your PUBLIC key to trust it offline)"
+else
+  echo "$RESP"
+  echo "   (install jq to pull out .license.tier / .license.expiryUtc and save .lease to a file)"
+fi
+# 3) READ IT BACK: POST /v1/validate re-verifies WITHOUT taking a new seat. Offline, verify keyright-lease.json's
+#    signature against your product public key - any edit to that file fails the check, so tampering is detected.
+echo "   re-check (no new seat):"
+req /v1/validate "{\"key\":\"$KEY_TERM\",\"product\":\"$PRODUCT\",\"machineId\":\"$MACHINE_ID\"}"
+req /v1/free-seat "{\"key\":\"$KEY_TERM\",\"product\":\"$PRODUCT\",\"machineId\":\"$MACHINE_ID\"}" >/dev/null
 
 echo
 echo "6. Credits / metered usage (consumption billing)"

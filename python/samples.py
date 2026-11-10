@@ -3,6 +3,7 @@ Keyright — Python SDK sample.
 
 Demonstrates the machine-licensing operations a software vendor needs:
   A. Read the license state (perpetual / term / evaluation) and show an eval banner
+  B. Read the activation response (edition/tier, expiry), store it tamper-proof, read it back offline
   1. Activate a machine (online)
   2. Deactivate a machine (online)
   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
@@ -10,7 +11,7 @@ Demonstrates the machine-licensing operations a software vendor needs:
   5. Force-deactivate a machine (vendor side)
   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
 
-Run:  pip install keyright>=1.2.0  &&  python samples.py
+Run:  pip install keyright>=2.8.7  &&  python samples.py
 
 Everything below the CONFIG block is generic SDK usage — copy it into your app.
 """
@@ -172,11 +173,61 @@ def part_6_credits():
         print(" then re-run this sample - balance() and consume() show real numbers.")
 
 
+# B. The four things every licensed app does after it has a key: activate, READ the response (tier / when
+#    it expires), STORE that proof so it survives restarts and can't be forged, and READ it back offline.
+def part_b_response_store_tamper():
+    print("\nB. Activation response -> tamper-proof storage -> read it back offline")
+    c = client()
+
+    # 1) Activate with a key and READ the response - not just "ok", the whole license:
+    info = c.activate(KEY_TERM)
+    print("   status        :", info.status.name)
+    print("   licensee      :", info.licensee)
+    print("   edition/tier  :", info.edition, "      <- the tier that was activated")
+    print("   expires       :", _date(info.expiry_utc) + ("  (TRIAL / evaluation)" if info.is_trial else ""))
+    if info.days_remaining is not None:
+        print("   days remaining:", info.days_remaining)
+    print("   entitlements  :", info.entitlements)
+
+    # 2) Where it is STORED. Online activation writes a SIGNED lease here automatically - the tamper-resistant
+    #    record on the machine. It is RSA-signed by YOUR server and verified against the embedded public key,
+    #    so a user cannot edit it to grant themselves a higher tier or a later expiry. (Nothing secret is in
+    #    it - the security is the signature, not hiding the file.)
+    lease_path = c.lease_cache_path
+    print("   stored lease  :", lease_path)
+
+    # 3) READ IT BACK with NO network, to decide licensed-vs-trial and days-left on every launch:
+    offline, source = c.validate()
+    tail = f", {offline.days_remaining} days left" if offline.days_remaining is not None else ""
+    print("   read offline  :", offline.status.name, "/", offline.edition, "/",
+          ("TRIAL" if offline.is_trial else "LICENSED") + tail, f"(source: {source})")
+
+    # 4) Prove it is tamper-PROOF: edit the stored lease (as an attacker would, to fake a license) and
+    #    re-verify it - the signature no longer matches, so the SDK refuses it instead of trusting it.
+    with open(lease_path, "r", encoding="utf-8") as fh:
+        tampered = _flip_one_char(fh.read())
+    forged = c.import_offline_lease(tampered)   # same verify path as validate(), on the edited bytes
+    rejected = forged.status != LicenseStatus.VALID
+    print("   tamper test   : edited the stored lease ->", forged.status.name,
+          "(REJECTED - tampering is detected)" if rejected else "(!! unexpectedly accepted)")
+
+    c.deactivate(KEY_TERM)   # free this sample's seat again
+
+
+def _flip_one_char(s):
+    if not s:
+        return s
+    i = len(s) // 2
+    ch = "b" if s[i] == "a" else "a"
+    return s[:i] + ch + s[i + 1:]
+
+
 def main():
     print("=" * 70)
     print("Keyright Python SDK sample -", PRODUCT)
     print("=" * 70)
     part_a_license_types()
+    part_b_response_store_tamper()
     part_1_and_2_activate_deactivate()
     part_3_offline_activation()
     part_5_force_deactivate()

@@ -7,6 +7,7 @@ Each sample walks through the machine-licensing lifecycle a vendor cares about:
 | # | Operation | What it shows |
 |---|-----------|---------------|
 | 1 | **Activate a machine** | Online activation against the Keyright service — consumes a seat, returns a signed lease that is cached for offline use. |
+| B | **Read the response, store it tamper-proof, read it back offline** | Read the activated **tier/edition**, expiry and entitlements off the result; the signed lease is stored on the machine (RSA-signed — editing it is *detected*, not trusted) and re-read **offline** to tell licensed-vs-trial and days remaining. |
 | 2 | **Deactivate a machine** | The customer releases the seat (e.g. moving to a new machine). |
 | 3 | **Offline / air-gapped activation** | Activate a machine that has no internet: the vendor issues a signed lease from the machine's ID, the client imports it and validates fully offline. |
 | 4 | **Offline deactivation** | *Not yet a first-class flow — see [the note below](#a-note-on-offline-deactivation).* |

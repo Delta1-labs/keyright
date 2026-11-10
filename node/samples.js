@@ -3,6 +3,7 @@
  *
  * Demonstrates the machine-licensing operations a software vendor needs:
  *   A. Read the license state (perpetual / term / evaluation) and show an eval banner
+ *   B. Read the activation response (edition/tier, expiry), store it tamper-proof, read it back offline
  *   1. Activate a machine (online)
  *   2. Deactivate a machine (online)
  *   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
@@ -212,11 +213,59 @@ async function part6Credits() {
   }
 }
 
+// B. The four things every licensed app does after it has a key: activate, READ the response (tier / when
+//    it expires), STORE that proof so it survives restarts and can't be forged, and READ it back offline.
+async function partBResponseStoreTamper() {
+  console.log('\nB. Activation response -> tamper-proof storage -> read it back offline');
+  const c = client();
+
+  // 1) Activate with a key and READ the response - not just "ok", the whole license:
+  const info = await c.activate(KEY_TERM);
+  console.log('   status        :', statusName(info));
+  console.log('   licensee      :', info.licensee);
+  console.log('   edition/tier  :', String(info.edition), '      <- the tier that was activated');
+  console.log('   expires       :', fmtDate(info.expiryUtc) + (info.isTrial ? '  (TRIAL / evaluation)' : ''));
+  if (info.daysRemaining != null) console.log('   days remaining:', info.daysRemaining);
+  console.log('   entitlements  :', String(info.entitlements));
+
+  // 2) Where it is STORED. Online activation writes a SIGNED lease here automatically - the tamper-resistant
+  //    record on the machine. It is RSA-signed by YOUR server and verified against the embedded public key,
+  //    so a user cannot edit it to grant themselves a higher tier or a later expiry. (Nothing secret is in
+  //    it - the security is the signature, not hiding the file.)
+  const leasePath = c.leaseCachePath;
+  console.log('   stored lease  :', leasePath);
+
+  // 3) READ IT BACK with NO network, to decide licensed-vs-trial and days-left on every launch:
+  const { info: offline, source } = c.validate();
+  console.log('   read offline  :', statusName(offline), '/', String(offline.edition), '/',
+    (offline.isTrial ? 'TRIAL' : 'LICENSED') +
+    (offline.daysRemaining != null ? ', ' + offline.daysRemaining + ' days left' : '') + ' (source: ' + source + ')');
+
+  // 4) Prove it is tamper-PROOF: edit the stored lease (as an attacker would, to fake a license) and
+  //    re-verify it - the signature no longer matches, so the SDK refuses it instead of trusting it.
+  const tampered = flipOneChar(fs.readFileSync(leasePath, 'utf8'));
+  const forged = c.importOfflineLease(tampered);   // same verify path as validate(), on the edited bytes
+  const rejected = forged.status !== LicenseStatus.VALID;
+  console.log('   tamper test   : edited the stored lease ->', statusName(forged),
+    rejected ? '(REJECTED - tampering is detected)' : '(!! unexpectedly accepted)');
+
+  await c.deactivate(KEY_TERM);   // free this sample's seat again
+}
+
+// Flip one character inside the stored lease so its bytes no longer match the signature.
+function flipOneChar(s) {
+  if (!s) return s;
+  const i = Math.floor(s.length / 2);
+  const ch = s[i] === 'a' ? 'b' : 'a';
+  return s.slice(0, i) + ch + s.slice(i + 1);
+}
+
 async function main() {
   console.log('='.repeat(70));
   console.log('Keyright Node.js SDK sample -', PRODUCT);
   console.log('='.repeat(70));
   await partALicenseTypes();
+  await partBResponseStoreTamper();
   await part1And2ActivateDeactivate();
   part3OfflineActivation();
   await part5ForceDeactivate();

@@ -2,6 +2,7 @@
 //
 // Demonstrates the machine-licensing operations a software vendor needs:
 //   A. Read the license state (perpetual / term / evaluation) and show an eval banner
+//   B. Read the activation response (edition/tier, expiry), store it tamper-proof, read it back offline
 //   1. Activate a machine (online)
 //   2. Deactivate a machine (online)
 //   3. Offline / air-gapped activation (import a vendor-issued lease, validate with no network)
@@ -40,6 +41,7 @@ Console.WriteLine($"Keyright .NET SDK sample - {Product}");
 Console.WriteLine(new string('=', 70));
 
 await PartALicenseTypes();
+await PartBResponseStoreTamper();
 await Part1And2ActivateDeactivate();
 await Part3OfflineActivation();
 await Part5ForceDeactivate();
@@ -223,6 +225,55 @@ async Task Part6Credits()
         Console.WriteLine("        -d '{\"amount\":1000}'");
         Console.WriteLine(" then re-run this sample - BalanceAsync() and ConsumeAsync() show real numbers.");
     }
+}
+
+// B. The four things every licensed app does after it has a key: activate, READ the response (what tier /
+//    when it expires), STORE that proof so it survives restarts and can't be forged, and READ it back offline.
+async Task PartBResponseStoreTamper()
+{
+    Console.WriteLine();
+    Console.WriteLine("B. Activation response -> tamper-proof storage -> read it back offline");
+    var c = Client();
+
+    // 1) Activate with a key and READ the response. ActivateAsync returns the whole license, not just "ok":
+    var info = await c.ActivateAsync(KeyTerm);
+    Console.WriteLine($"   status        : {info.Status}");
+    Console.WriteLine($"   licensee      : {info.Licensee}");
+    Console.WriteLine($"   edition/tier  : {info.Edition}        <- the tier that was activated");
+    Console.WriteLine($"   expires       : {FormatDate(info.ExpiryUtc)}{(info.IsTrial ? "  (TRIAL / evaluation)" : "")}");
+    if (info.DaysRemaining is int dr) Console.WriteLine($"   days remaining: {dr}");
+    Console.WriteLine($"   entitlements  : {info.Entitlements}");
+
+    // 2) Where it is STORED. Online activation writes a SIGNED lease here automatically. This is the
+    //    tamper-resistant record on the machine: it is RSA-signed by YOUR server and verified against the
+    //    embedded public key, so a user cannot edit it to grant themselves a higher tier or a later expiry.
+    //    (Nothing secret is in it — the security is the signature, not hiding the file.)
+    string leasePath = c.LeaseCachePath;
+    Console.WriteLine($"   stored lease  : {leasePath}");
+
+    // 3) READ IT BACK with NO network, to decide licensed-vs-trial and days-left on every launch:
+    var offline = c.Validate(out var source);
+    Console.WriteLine($"   read offline  : {offline.Status} / {offline.Edition} / "
+        + $"{(offline.IsTrial ? "TRIAL" : "LICENSED")}{(offline.DaysRemaining is int dl ? $", {dl} days left" : "")}  (source: {source})");
+
+    // 4) Prove it is tamper-PROOF: edit the stored lease (as an attacker would, to fake a license) and
+    //    re-verify it — the signature no longer matches, so the SDK refuses it instead of trusting it.
+    string tampered = FlipOneChar(await File.ReadAllTextAsync(leasePath));
+    var forged = c.ImportOfflineLease(tampered);   // same verify path as Validate(), on the edited bytes
+    bool rejected = forged.Status != LicenseStatus.Valid;
+    Console.WriteLine($"   tamper test   : edited the stored lease -> {forged.Status} "
+        + (rejected ? "(REJECTED — tampering is detected)" : "(!! unexpectedly accepted)"));
+
+    await c.DeactivateAsync(KeyTerm);   // free this sample's seat again
+}
+
+// Flip one character inside the stored lease so its bytes no longer match the signature.
+static string FlipOneChar(string s)
+{
+    if (s.Length == 0) return s;
+    int i = s.Length / 2;
+    char ch = s[i] == 'a' ? 'b' : 'a';
+    return s.Substring(0, i) + ch + s.Substring(i + 1);
 }
 
 static string Trunc(string s, int max) => s.Length <= max ? s : s.Substring(0, max);
