@@ -38,8 +38,8 @@ All samples target SDK **1.2.0** or later (operation 6, credits / metered usage,
 ## How licensing works in 30 seconds
 
 1. **You** (the vendor) create a license in the Keyright dashboard. It has a **tier** (e.g. `pro`, `ent`), a **seat count**, an optional **expiry**, and an optional **trial** flag.
-2. Your app calls **`activate(licenseKey)`** on the machine. Keyright checks the seat count, binds the license to that machine's fingerprint, and returns a **signed lease**.
-3. The SDK **caches** the lease and verifies it against your product's **public key**. After that, `validate()` works **offline** until the lease expires — no phone-home on every launch.
+2. Your app calls **`activate(licenseKey)`** on the machine. Keyright checks the seat count, **binds the license to that machine's hardware** — a fingerprint derived from the device, so the license is **node-locked** — and returns a **signed lease** that is valid **only on that machine**.
+3. The SDK **caches** the lease and verifies it against your product's **public key**. After that, `validate()` works **offline** until the lease expires — no phone-home on every launch. Because the lease is bound to the hardware (and signed), copying it to a different machine fails validation: it can be neither moved nor forged.
 4. Re-activating the **same** machine is idempotent (it never burns a second seat). Moving machines? Call **`deactivate()`** to free the seat first.
 
 Each SDK is configured with three things:
