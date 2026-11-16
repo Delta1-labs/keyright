@@ -13,6 +13,7 @@ Each sample walks through the machine-licensing lifecycle a vendor cares about:
 | 4 | **Offline deactivation** | *Not yet a first-class flow — see [the note below](#a-note-on-offline-deactivation).* |
 | 5 | **Force-deactivate (vendor side)** | You free a stuck seat for a customer from your backend, without needing the client. |
 | 6 | **Credits / metered usage** | Read a key's credit-pool balance, price a metered action with a dry run, then consume credits — with an idempotency key so retries never double-charge. |
+| 7 | **Entitlements** | Enforce **version access**, **feature flags** and **numeric quotas** from signed key/value grants carried in the license — one key pair across every major version, no key rotation. |
 
 Plus a bonus every trial-ware vendor needs:
 
@@ -109,6 +110,35 @@ curl -X POST "$SVC/admin/credit-pools/<POOL_ID>/grant" \
 ```
 
 Re-run any sample afterward and operation 6 reports real balances and a live deduction.
+
+---
+
+## Entitlements (operation 7)
+
+An **entitlement** is a signed `name → value` grant Keyright carries inside both the offline license file and the online activation lease. Your app reads it from the resolved license and verifies it against the **public key you already embed** — so a customer cannot edit the file to unlock a feature, raise a limit, or run a version they are not licensed for. One mechanism covers three jobs:
+
+- **Version access** — `max_major_version`: the highest product major the license runs. Your app compares its own major and declines anything higher.
+- **Feature flag** — `feature.pdf_export`: a boolean capability unlocked per license, with no new build.
+- **Numeric quota** — `max_projects`: a plan limit read straight from the signed license (`"unlimited"` supported).
+
+> **One key pair across every major version.** You do **not** rotate signing keys or ship a new public key to release a new major — the public key never moves. You change what a customer may do by **re-issuing their key** with new entitlements. A license sold for the old line simply carries a lower (or no) `max_major_version`, so the new major declines it locally.
+
+The entitlement names above are **generic examples** — pick whatever keys your app agrees on. Set them when you issue (or update) a key, or put defaults on the **edition/tier template** so every new key inherits them:
+
+```bash
+SVC=https://keyright.delta1labs.com
+# per-license: attach entitlements when issuing a key
+curl -X POST "$SVC/admin/licenses" \
+     -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \
+     -d '{"licensee":"Acme Ltd","product":"keyright-samples","tier":"pro",
+          "entitlements":{"max_major_version":"2","feature.pdf_export":"true","max_projects":"10"}}'
+# or on the edition/tier template, so every key issued under it inherits the defaults
+curl -X POST "$SVC/admin/products/keyright-samples/tiers" \
+     -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" -H "Content-Type: application/json" \
+     -d '{"name":"Pro","seats":3,"entitlements":{"feature.pdf_export":"true","max_major_version":"2"}}'
+```
+
+Re-run any sample afterward and operation 7 reports the live version/feature/quota decisions. For version gating by release **date** or exact version **ranges** (not just a major), use Keyright's first-class release-coverage feature instead.
 
 ---
 

@@ -11,6 +11,7 @@
 #   B. Read the activation response (tier/expiry), store the signed lease, re-check (tamper-proof)
 #   1+2. Activate then free a machine's seat (online)
 #   6. Credits / metered usage - balance, dry-run pricing, and consume
+#   7. Entitlements - read signed version/feature/quota grants from the lease (no key rotation between versions)
 #   5. Force-deactivate a seat (vendor side; needs your product admin token)
 #
 # Run:  bash samples.sh         (needs curl; `jq` is used for pretty output if present, optional)
@@ -113,6 +114,51 @@ echo " consume (real; idempotencyKey makes retries replay instead of double-char
 req /v1/consume "{\"key\":\"$KEY_PERPETUAL\",\"product\":\"$PRODUCT\",\"action\":\"$ACTION\",\"quantity\":1,\"idempotencyKey\":\"rest-sample-consume\"}"
 echo " (if status is 'unknown_action'/'no_pool', this demo product has no metered '$ACTION' / pool yet."
 echo "  Configure it once with your admin token - see the repo README, 'Credits / metered usage'.)"
+
+echo
+echo "7. Entitlements - one signed key, enforced per version / feature / quota"
+# ENTITLEMENTS are signed key/value grants carried inside the license and the online lease. They let you
+# enforce VERSION access, FEATURE flags and numeric QUOTAS from ONE key pair - so you keep the same signing
+# keys across every major version and change what a customer may do by RE-ISSUING the key, not by rotating
+# keys and shipping a new public key in every release. All three values are part of the signed lease payload,
+# so a user cannot edit it to unlock a feature, raise a limit, or run a version they are not licensed for.
+ENT_RESP=$(curl -sS -X POST "$SVC/v1/activate" -H "Content-Type: application/json" \
+  -d "{\"key\":\"$KEY_TERM\",\"product\":\"$PRODUCT\",\"machineId\":\"$MACHINE_ID\"}")
+if command -v jq >/dev/null 2>&1; then
+  # The entitlements live inside the signed `lease` (a JSON string). Parse it, then read the three keys.
+  # Verify the lease signature against your PUBLIC key before trusting these offline (see section B).
+  ENT=$(echo "$ENT_RESP" | jq -r '.lease | fromjson | .entitlements // {}')
+
+  # (a) VERSION ENFORCEMENT. Your app knows its own major version; the license says the highest it covers.
+  #     This is how you ship v3 WITHOUT rotating keys: a v2-era key simply carries no (or a lower) ceiling.
+  RUNNING_MAJOR=3   # your product's own major version
+  MAX_MAJOR=$(echo "$ENT" | jq -r '.max_major_version // empty')
+  if [ -n "$MAX_MAJOR" ]; then
+    if [ "$RUNNING_MAJOR" -le "$MAX_MAJOR" ]; then VERDICT="ALLOWED"; else VERDICT="BLOCKED (upgrade required)"; fi
+    echo "   version : covers up to v${MAX_MAJOR}.x; this build is v${RUNNING_MAJOR}.x -> $VERDICT"
+  else
+    echo "   version : no 'max_major_version' on this key -> treat as your pre-coverage default"
+  fi
+
+  # (b) FEATURE FLAG. Unlock a capability per license, with no new build (truthy = true/1/yes/enabled).
+  PDF=$(echo "$ENT" | jq -r '(.["feature.pdf_export"] // "") | ascii_downcase')
+  case "$PDF" in true|1|yes|enabled) echo "   feature : PDF export -> ENABLED" ;; *) echo "   feature : PDF export -> locked (upgrade to unlock)" ;; esac
+
+  # (c) NUMERIC QUOTA. A plan limit read straight from the signed lease; "unlimited" is supported verbatim.
+  MAXP=$(echo "$ENT" | jq -r '.max_projects // "3"')
+  echo "   quota   : max projects = $MAXP"
+else
+  echo "   (install jq to parse .lease and read .entitlements.max_major_version / feature.pdf_export / max_projects)"
+fi
+req /v1/free-seat "{\"key\":\"$KEY_TERM\",\"product\":\"$PRODUCT\",\"machineId\":\"$MACHINE_ID\"}" >/dev/null
+echo "   Set these when you ISSUE the key (same key pair for every version) - they ride signed into the"
+echo "   offline license and the online lease, so no rotation is needed to ship a new major:"
+echo "     curl -X POST \"$SVC/admin/licenses\" -H \"X-Admin-Token: \$KEYRIGHT_ADMIN_TOKEN\" \\"
+echo "          -H \"Content-Type: application/json\" -d '{"
+echo "            \"licensee\":\"Acme Ltd\", \"product\":\"$PRODUCT\", \"tier\":\"pro\","
+echo "            \"entitlements\": {"
+echo "              \"max_major_version\":\"2\", \"feature.pdf_export\":\"true\", \"max_projects\":\"10\" } }'"
+echo "   Tip: put defaults on the edition/tier template so every new key inherits them automatically."
 
 echo
 echo "5. Force-deactivate a seat (vendor side) - needs your product admin token"

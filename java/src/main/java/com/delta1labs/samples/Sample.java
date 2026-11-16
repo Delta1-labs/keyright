@@ -12,6 +12,7 @@ package com.delta1labs.samples;
  *   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
  *   5. Force-deactivate a machine (vendor side)
  *   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
+ *   7. Entitlements - one signed key, enforced per VERSION / FEATURE / QUOTA (no key rotation between versions)
  *
  * Run:  mvn compile exec:java
  *
@@ -19,6 +20,7 @@ package com.delta1labs.samples;
  */
 
 import com.delta1labs.keyright.ConsumeResult;
+import com.delta1labs.keyright.EntitlementSet;
 import com.delta1labs.keyright.KeyrightClient;
 import com.delta1labs.keyright.KeyrightOptions;
 import com.delta1labs.keyright.LicenseInfo;
@@ -221,6 +223,53 @@ public final class Sample {
         }
     }
 
+    // 7. ENTITLEMENTS - signed key/value grants carried inside the license and the online lease. They let you
+    //    enforce VERSION access, FEATURE flags and numeric QUOTAS from ONE key pair - so you keep the same signing
+    //    keys across every major version and change what a customer may do by re-issuing the key, not by rotating
+    //    keys and shipping a new public key in every release. All three values are part of the signed payload, so a
+    //    user cannot edit the license to unlock a feature, raise a limit, or run a version they are not licensed for.
+    static void part7Entitlements() {
+        System.out.println("\n7. Entitlements - one signed key, enforced per version / feature / quota");
+        KeyrightClient c = client();
+        LicenseInfo info = c.activate(KEY_TERM);
+        EntitlementSet ent = info.entitlements;  // getRaw() / isEnabled() / getLimit(name, fallback)
+
+        // (a) VERSION ENFORCEMENT. Your app knows its own major version; the license says the highest it covers.
+        //     This is how you ship v3 WITHOUT rotating keys: a v2-era key simply carries no (or a lower) ceiling.
+        final int runningMajor = 3;                          // your product's own major version
+        String maxMajorRaw = ent.getRaw("max_major_version"); // e.g. "2" or "3" (a generic, vendor-chosen key)
+        Integer maxMajor = null;
+        try { if (maxMajorRaw != null) maxMajor = Integer.parseInt(maxMajorRaw.trim()); } catch (NumberFormatException ignored) { }
+        if (maxMajor != null) {
+            boolean covered = runningMajor <= maxMajor;      // run only at or below the licensed major
+            System.out.println("   version : covers up to v" + maxMajor + ".x; this build is v" + runningMajor + ".x -> "
+                    + (covered ? "ALLOWED" : "BLOCKED (upgrade required)"));
+        } else {
+            System.out.println("   version : no 'max_major_version' on this key -> treat as your pre-coverage default");
+        }
+
+        // (b) FEATURE FLAG. Unlock a capability per license, with no new build. isEnabled() accepts true/1/yes/enabled.
+        boolean pdf = ent.isEnabled("feature.pdf_export");
+        System.out.println("   feature : PDF export -> " + (pdf ? "ENABLED" : "locked (upgrade to unlock)"));
+
+        // (c) NUMERIC QUOTA. A plan limit read straight from the signed license; "unlimited" => EntitlementSet.MAXLONG.
+        long maxProjects = ent.getLimit("max_projects", 3);
+        String quota = maxProjects == EntitlementSet.MAXLONG ? "unlimited" : Long.toString(maxProjects);
+        System.out.println("   quota   : max projects = " + quota);
+
+        c.deactivate(KEY_TERM);
+
+        System.out.println();
+        System.out.println("   Set these when you ISSUE the key (same key pair for every version) - they ride signed");
+        System.out.println("   into the offline license and the online lease, so no rotation is needed to ship a new major:");
+        System.out.println("     curl -X POST \"" + SERVICE_URL + "/admin/licenses\" -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" \\");
+        System.out.println("          -H \"Content-Type: application/json\" -d '{");
+        System.out.println("            \"licensee\":\"Acme Ltd\", \"product\":\"" + PRODUCT + "\", \"tier\":\"pro\",");
+        System.out.println("            \"entitlements\": {");
+        System.out.println("              \"max_major_version\":\"2\", \"feature.pdf_export\":\"true\", \"max_projects\":\"10\" } }'");
+        System.out.println("   Tip: put defaults on the edition/tier template so every new key inherits them automatically.");
+    }
+
     // B. The four things every licensed app does after it has a key: activate, READ the response (tier / when
     //    it expires), STORE that proof so it survives restarts and can't be forged, and READ it back offline.
     static void partBResponseStoreTamper() {
@@ -286,6 +335,7 @@ public final class Sample {
         part3OfflineActivation();
         part5ForceDeactivate();
         part6Credits();
+        part7Entitlements();
         System.out.println("\n4. Offline deactivation: not a first-class flow yet. Free an offline machine's");
         System.out.println("   seat vendor-side (op 5) when your backend has connectivity, or let its offline");
         System.out.println("   lease lapse (it is issued with a finite TTL). See the repo README.");

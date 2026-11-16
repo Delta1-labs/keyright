@@ -9,6 +9,7 @@
 //   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
 //   5. Force-deactivate a machine (vendor side)
 //   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
+//   7. Entitlements - one signed key, enforced per VERSION / FEATURE / QUOTA (no key rotation between versions)
 //
 // Run:  dotnet run
 //
@@ -46,6 +47,7 @@ await Part1And2ActivateDeactivate();
 await Part3OfflineActivation();
 await Part5ForceDeactivate();
 await Part6Credits();
+await Part7Entitlements();
 
 Console.WriteLine();
 Console.WriteLine("4. Offline deactivation: not a first-class flow yet. Free an offline machine's");
@@ -225,6 +227,56 @@ async Task Part6Credits()
         Console.WriteLine("        -d '{\"amount\":1000}'");
         Console.WriteLine(" then re-run this sample - BalanceAsync() and ConsumeAsync() show real numbers.");
     }
+}
+
+// 7. ENTITLEMENTS - signed key/value grants carried inside the license and the online lease. They let you
+//    enforce VERSION access, FEATURE flags and numeric QUOTAS from ONE key pair - so you keep the same signing
+//    keys across every major version and change what a customer may do by re-issuing the key, not by rotating
+//    keys and shipping a new public key in every release. All three values are part of the signed payload, so a
+//    user cannot edit the license to unlock a feature, raise a limit, or run a version they are not licensed for.
+async Task Part7Entitlements()
+{
+    Console.WriteLine();
+    Console.WriteLine("7. Entitlements - one signed key, enforced per version / feature / quota");
+    var c = Client();
+    var info = await c.ActivateAsync(KeyTerm);
+    var ent = info.Entitlements;
+
+    // (a) VERSION ENFORCEMENT. Your app knows its own major version; the license says the highest it covers.
+    //     This is how you ship v3 WITHOUT rotating keys: a v2-era key simply carries no (or a lower) ceiling.
+    const int runningMajor = 3;                               // your product's own major version
+    var maxMajorRaw = ent.GetRaw("max_major_version");        // e.g. "2" or "3" (a generic, vendor-chosen key)
+    if (int.TryParse(maxMajorRaw, out var maxMajor))
+    {
+        bool covered = runningMajor <= maxMajor;              // run only at or below the licensed major
+        Console.WriteLine($"   version : covers up to v{maxMajor}.x; this build is v{runningMajor}.x -> "
+            + (covered ? "ALLOWED" : "BLOCKED (upgrade required)"));
+    }
+    else
+    {
+        Console.WriteLine("   version : no 'max_major_version' on this key -> treat as your pre-coverage default");
+    }
+
+    // (b) FEATURE FLAG. Unlock a capability per license, with no new build. IsEnabled() accepts true/1/yes/enabled.
+    bool pdf = ent.IsEnabled("feature.pdf_export");
+    Console.WriteLine($"   feature : PDF export -> {(pdf ? "ENABLED" : "locked (upgrade to unlock)")}");
+
+    // (c) NUMERIC QUOTA. A plan limit read straight from the signed license; "unlimited" => long.MaxValue.
+    long maxProjects = ent.GetLimit("max_projects", fallback: 3);
+    string quota = maxProjects == long.MaxValue ? "unlimited" : maxProjects.ToString(CultureInfo.InvariantCulture);
+    Console.WriteLine($"   quota   : max projects = {quota}");
+
+    await c.DeactivateAsync(KeyTerm);
+
+    Console.WriteLine();
+    Console.WriteLine("   Set these when you ISSUE the key (same key pair for every version) - they ride signed");
+    Console.WriteLine("   into the offline license and the online lease, so no rotation is needed to ship a new major:");
+    Console.WriteLine($"     curl -X POST \"{ServiceUrl}/admin/licenses\" -H \"X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN\" \\");
+    Console.WriteLine("          -H \"Content-Type: application/json\" -d '{");
+    Console.WriteLine($"            \"licensee\":\"Acme Ltd\", \"product\":\"{Product}\", \"tier\":\"pro\",");
+    Console.WriteLine("            \"entitlements\": {");
+    Console.WriteLine("              \"max_major_version\":\"2\", \"feature.pdf_export\":\"true\", \"max_projects\":\"10\" } }'");
+    Console.WriteLine("   Tip: put defaults on the edition/tier template so every new key inherits them automatically.");
 }
 
 // B. The four things every licensed app does after it has a key: activate, READ the response (what tier /

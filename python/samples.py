@@ -10,6 +10,7 @@ Demonstrates the machine-licensing operations a software vendor needs:
   4. Offline deactivation  -> not a first-class flow yet; see the note at the bottom
   5. Force-deactivate a machine (vendor side)
   6. Credits / metered usage - read a pool balance, price an action (dry-run), consume credits
+  7. Entitlements - one signed key, enforced per VERSION / FEATURE / QUOTA (no key rotation between versions)
 
 Run:  pip install keyright>=2.8.7  &&  python samples.py
 
@@ -173,6 +174,57 @@ def part_6_credits():
         print(" then re-run this sample - balance() and consume() show real numbers.")
 
 
+# 7. ENTITLEMENTS - signed key/value grants carried inside the license and the online lease. They let you
+#    enforce VERSION access, FEATURE flags and numeric QUOTAS from ONE key pair - so you keep the same signing
+#    keys across every major version and change what a customer may do by re-issuing the key, not by rotating
+#    keys and shipping a new public key in every release. All three values are part of the signed payload, so a
+#    user cannot edit the license to unlock a feature, raise a limit, or run a version they are not licensed for.
+_UNLIMITED = 9223372036854775807  # long.MaxValue — what get_limit() returns for "unlimited"
+
+
+def part_7_entitlements():
+    print("\n7. Entitlements - one signed key, enforced per version / feature / quota")
+    c = client()
+    info = c.activate(KEY_TERM)
+    ent = info.entitlements  # EntitlementSet: get_raw() / is_enabled() / get_limit(name, fallback)
+
+    # (a) VERSION ENFORCEMENT. Your app knows its own major version; the license says the highest it covers.
+    #     This is how you ship v3 WITHOUT rotating keys: a v2-era key simply carries no (or a lower) ceiling.
+    running_major = 3                                  # your product's own major version
+    max_major_raw = ent.get_raw("max_major_version")   # e.g. "2" or "3" (a generic, vendor-chosen key)
+    try:
+        max_major = int(max_major_raw)
+    except (TypeError, ValueError):
+        max_major = None
+    if max_major is not None:
+        covered = running_major <= max_major           # run only at or below the licensed major
+        print(f"   version : covers up to v{max_major}.x; this build is v{running_major}.x -> "
+              + ("ALLOWED" if covered else "BLOCKED (upgrade required)"))
+    else:
+        print("   version : no 'max_major_version' on this key -> treat as your pre-coverage default")
+
+    # (b) FEATURE FLAG. Unlock a capability per license, with no new build. is_enabled() accepts true/1/yes/enabled.
+    pdf = ent.is_enabled("feature.pdf_export")
+    print("   feature : PDF export ->", "ENABLED" if pdf else "locked (upgrade to unlock)")
+
+    # (c) NUMERIC QUOTA. A plan limit read straight from the signed license; "unlimited" => a max sentinel.
+    max_projects = ent.get_limit("max_projects", fallback=3)
+    quota = "unlimited" if max_projects >= _UNLIMITED else str(max_projects)
+    print(f"   quota   : max projects = {quota}")
+
+    c.deactivate(KEY_TERM)
+
+    print()
+    print("   Set these when you ISSUE the key (same key pair for every version) - they ride signed")
+    print("   into the offline license and the online lease, so no rotation is needed to ship a new major:")
+    print(f'     curl -X POST "{SERVICE_URL}/admin/licenses" -H "X-Admin-Token: $KEYRIGHT_ADMIN_TOKEN" \\')
+    print("          -H \"Content-Type: application/json\" -d '{")
+    print(f'            "licensee":"Acme Ltd", "product":"{PRODUCT}", "tier":"pro",')
+    print('            "entitlements": {')
+    print('              "max_major_version":"2", "feature.pdf_export":"true", "max_projects":"10" } }\'')
+    print("   Tip: put defaults on the edition/tier template so every new key inherits them automatically.")
+
+
 # B. The four things every licensed app does after it has a key: activate, READ the response (tier / when
 #    it expires), STORE that proof so it survives restarts and can't be forged, and READ it back offline.
 def part_b_response_store_tamper():
@@ -232,6 +284,7 @@ def main():
     part_3_offline_activation()
     part_5_force_deactivate()
     part_6_credits()
+    part_7_entitlements()
     print("\n4. Offline deactivation: not a first-class flow yet. Free an offline machine's")
     print("   seat vendor-side (op 5) when your backend has connectivity, or let its offline")
     print("   lease lapse (it is issued with a finite TTL). See the repo README.")
